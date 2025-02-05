@@ -3,6 +3,7 @@ MST Server Implementation in C++
 Using Boost.Asio for Asynchronous Networking
 Supports Kruskal and Prim Algorithms
 Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool, Pipeline Pattern
+Includes Memory and Performance Analysis using Valgrind
 */
 
 #include "graph.h"
@@ -16,6 +17,7 @@ Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool, Pipeli
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 
 using boost::asio::ip::tcp;
 
@@ -34,6 +36,8 @@ public:
 class ComputeMSTStage : public PipelineStage {
 public:
     void process(std::string request, std::function<void(std::string)> next) override {
+        auto start = std::chrono::high_resolution_clock::now();
+
         std::istringstream ss(request);
         std::string command;
         ss >> command;
@@ -58,6 +62,11 @@ public:
             for (const auto& [u, v, weight] : mst.getEdges()) {
                 output << u << " - " << v << " : " << weight << "\n";
             }
+
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> duration = end - start;
+            output << "Computation Time: " << duration.count() << " seconds\n";
+
             next(output.str());
         } else {
             next("Invalid Command");
@@ -146,6 +155,7 @@ int main() {
     }
     return 0;
 }
+
 
 
 
