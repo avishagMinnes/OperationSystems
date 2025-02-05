@@ -1,41 +1,24 @@
 #ifndef GRAPH_H
 #define GRAPH_H
 
-#include <iostream>
-#include <unordered_map>
 #include <vector>
-#include <limits>
+#include <list>
+#include <unordered_map>
+#include <functional>
 
 class Graph {
 public:
-    Graph() = default;
-    
-    // הוספת קשת בין שני קודקודים
-    void addEdge(int u, int v, double weight);
-
-    // הסרת קשת
+    Graph(int n, int m);
+    void addEdge(int u, int v);
     void removeEdge(int u, int v);
-
-    // עדכון משקל קשת
-    void updateEdge(int u, int v, double newWeight);
-
-    // קבלת שכנים של קודקוד
-    std::vector<std::pair<int, double>> getNeighbors(int u) const;
-
-    // הדפסת הגרף
-    void printGraph() const;
-
-    // בדיקת קיום קודקוד
-    bool containsVertex(int u) const;
-
-    // בדיקת קיום קשת
-    bool containsEdge(int u, int v) const;
-
-    // קבלת כל הקודקודים
-    std::vector<int> getVertices() const;
+    std::vector<std::vector<int>> kosaraju();
 
 private:
-    std::unordered_map<int, std::unordered_map<int, double>> adjList;
+    int n, m;
+    std::vector<std::list<int>> graph;
+    std::vector<std::list<int>> reverseGraph;
+    void dfs(int v, std::vector<bool>& visited, std::list<int>& Stack);
+    void reverseDfs(int v, std::vector<bool>& visited, std::vector<int>& component);
 };
 
 #endif // GRAPH_H
