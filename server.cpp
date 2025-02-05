@@ -2,6 +2,7 @@
 MST Server Implementation in C++
 Using Boost.Asio for Asynchronous Networking
 Supports Kruskal and Prim Algorithms
+Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool
 */
 
 #include "graph.h"
@@ -10,14 +11,27 @@ Supports Kruskal and Prim Algorithms
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <thread>
+#include <vector>
 
 using boost::asio::ip::tcp;
 
 class MSTServer {
 public:
-    MSTServer(boost::asio::io_context& io_context, int port)
+    MSTServer(boost::asio::io_context& io_context, int port, int num_threads)
         : io_context(io_context), acceptor(io_context, tcp::endpoint(tcp::v4(), port)) {
         startAccept();
+        for (int i = 0; i < num_threads; ++i) {
+            worker_threads.emplace_back([this]() { io_context.run(); });
+        }
+    }
+
+    ~MSTServer() {
+        for (auto& thread : worker_threads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
     }
 
 private:
@@ -80,16 +94,19 @@ private:
 
     boost::asio::io_context& io_context;
     tcp::acceptor acceptor;
+    std::vector<std::thread> worker_threads;
 };
 
 int main() {
     try {
+        const int num_threads = std::thread::hardware_concurrency();
         boost::asio::io_context io_context;
-        MSTServer server(io_context, 12345);
+        MSTServer server(io_context, 12345, num_threads);
         io_context.run();
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
     }
     return 0;
 }
+
 
