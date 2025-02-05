@@ -4,6 +4,7 @@
 #include <vector>
 #include <list>
 #include <iostream>
+#include <limits>
 #include "mst_factory.hpp"
 
 class Graph {
@@ -13,8 +14,8 @@ public:
     void removeEdge(int u, int v);
     void printGraph() const;
 
-    // Compute MST for directed graph
-    void computeMST(MSTAlgorithm algo, int root);
+    // Compute MST for directed graph (without root)
+    void computeMST(MSTAlgorithm algo);
 
     // MST Metrics
     int getMSTTotalWeight() const;
