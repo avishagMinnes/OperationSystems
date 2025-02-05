@@ -2,7 +2,7 @@
 MST Server Implementation in C++
 Using Boost.Asio for Asynchronous Networking
 Supports Kruskal and Prim Algorithms
-Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool
+Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool, Pipeline Pattern
 */
 
 #include "graph.h"
@@ -13,8 +13,64 @@ Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool
 #include <sstream>
 #include <thread>
 #include <vector>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 
 using boost::asio::ip::tcp;
+
+class PipelineStage {
+public:
+    virtual void process(std::string request, std::function<void(std::string)> next) = 0;
+};
+
+class ParseRequestStage : public PipelineStage {
+public:
+    void process(std::string request, std::function<void(std::string)> next) override {
+        next(request); // Pass request to next stage
+    }
+};
+
+class ComputeMSTStage : public PipelineStage {
+public:
+    void process(std::string request, std::function<void(std::string)> next) override {
+        std::istringstream ss(request);
+        std::string command;
+        ss >> command;
+
+        if (command == "MST") {
+            std::string algorithm;
+            ss >> algorithm;
+            
+            Graph g;
+            int u, v;
+            double w;
+            
+            while (ss >> u >> v >> w) {
+                g.addEdge(u, v, w);
+            }
+            
+            MST mst = (algorithm == "KRUSKAL") ? 
+                      MSTFactory::computeMST(g, KRUSKAL) : 
+                      MSTFactory::computeMST(g, PRIM);
+
+            std::ostringstream output;
+            for (const auto& [u, v, weight] : mst.getEdges()) {
+                output << u << " - " << v << " : " << weight << "\n";
+            }
+            next(output.str());
+        } else {
+            next("Invalid Command");
+        }
+    }
+};
+
+class ResponseStage : public PipelineStage {
+public:
+    void process(std::string response, std::function<void(std::string)> next) override {
+        next(response + "\n");
+    }
+};
 
 class MSTServer {
 public:
@@ -54,42 +110,24 @@ private:
                     std::string request;
                     std::getline(stream, request);
                     
-                    std::string response = processRequest(request) + "\n";
-                    boost::asio::async_write(*socket, boost::asio::buffer(response),
-                        [socket](boost::system::error_code, std::size_t) {});
+                    processPipeline(request, [socket](std::string response) {
+                        boost::asio::async_write(*socket, boost::asio::buffer(response),
+                            [socket](boost::system::error_code, std::size_t) {});
+                    });
                 }
             });
     }
 
-    std::string processRequest(const std::string& request) {
-        std::istringstream ss(request);
-        std::string command;
-        ss >> command;
+    void processPipeline(std::string request, std::function<void(std::string)> finalStage) {
+        ParseRequestStage parseStage;
+        ComputeMSTStage computeStage;
+        ResponseStage responseStage;
 
-        if (command == "MST") {
-            std::string algorithm;
-            ss >> algorithm;
-            
-            Graph g;
-            int u, v;
-            double w;
-            
-            while (ss >> u >> v >> w) {
-                g.addEdge(u, v, w);
-            }
-            
-            MST mst = (algorithm == "KRUSKAL") ? 
-                      MSTFactory::computeMST(g, KRUSKAL) : 
-                      MSTFactory::computeMST(g, PRIM);
-
-            std::ostringstream output;
-            for (const auto& [u, v, weight] : mst.getEdges()) {
-                output << u << " - " << v << " : " << weight << "\n";
-            }
-
-            return output.str();
-        }
-        return "Invalid Command";
+        parseStage.process(request, [&](std::string parsedRequest) {
+            computeStage.process(parsedRequest, [&](std::string computedResult) {
+                responseStage.process(computedResult, finalStage);
+            });
+        });
     }
 
     boost::asio::io_context& io_context;
@@ -108,6 +146,7 @@ int main() {
     }
     return 0;
 }
+
 
 
 
