@@ -21,6 +21,7 @@ pthread_cond_t queueCond = PTHREAD_COND_INITIALIZER;
 
 std::queue<int> requestQueue;
 bool serverRunning = true;
+int listener;  // Global listener socket
 
 // Function Prototypes
 void* leaderThread(void* arg);
@@ -34,16 +35,20 @@ void notifyGraphUpdated() {
     pthread_mutex_unlock(&graphMutex);
 }
 
-// Leader-Follower pattern: Leader thread accepts connections
+// Leader thread accepts connections (Leader-Follower Pattern)
 void* leaderThread(void* arg) {
-    int listener = *(int*)arg;
-
     while (serverRunning) {
         struct sockaddr_in clientAddr;
         socklen_t clientLen = sizeof(clientAddr);
         int clientSocket = accept(listener, (struct sockaddr*)&clientAddr, &clientLen);
 
+        if (!serverRunning) {
+            close(listener);  // Ensure listener socket is closed
+            break;
+        }
+
         if (clientSocket < 0) {
+            if (!serverRunning) break;  // Ensure shutdown
             perror("accept");
             continue;
         }
@@ -59,24 +64,34 @@ void* leaderThread(void* arg) {
         }
         pthread_mutex_unlock(&queueMutex);
     }
+
+    std::cout << "Leader thread exiting...\n";
     return nullptr;
 }
 
-// Worker thread processes client requests (Pipeline pattern)
+// Worker thread processes client requests (Pipeline Pattern)
 void* workerThread(void* arg) {
     while (serverRunning) {
         int clientSocket;
 
         pthread_mutex_lock(&queueMutex);
-        while (requestQueue.empty()) {
+        while (requestQueue.empty() && serverRunning) {
             pthread_cond_wait(&queueCond, &queueMutex);
         }
+
+        if (!serverRunning) {
+            pthread_mutex_unlock(&queueMutex);
+            break;
+        }
+
         clientSocket = requestQueue.front();
         requestQueue.pop();
         pthread_mutex_unlock(&queueMutex);
 
         processClient(clientSocket);
     }
+
+    std::cout << "Worker thread exiting...\n";
     return nullptr;
 }
 
@@ -140,7 +155,7 @@ void processClient(int sockfd) {
             MSTAlgorithm algo = (strcmp(algoType, "Prim") == 0) ? MSTAlgorithm::PRIM : MSTAlgorithm::BORUVKA;
             pthread_mutex_lock(&graphMutex);
             if (g != nullptr) {
-                g->computeMST(algo, root);
+                g->computeMST(algo);
                 response = "MST Computed:\n";
                 response += "Total MST Weight: " + std::to_string(g->getMSTTotalWeight()) + "\n";
                 response += "Longest Distance in MST: " + std::to_string(g->getMSTLongestDistance()) + "\n";
@@ -148,6 +163,17 @@ void processClient(int sockfd) {
                 response += "Shortest Distance in MST: " + std::to_string(g->getMSTShortestDistance()) + "\n";
             }
             pthread_mutex_unlock(&graphMutex);
+        } 
+        else if (command.find("exit") == 0) {  // Gracefully shutdown server
+            std::cout << "Shutting down server..." << std::endl;
+            serverRunning = false;
+
+            pthread_cond_broadcast(&queueCond);  // Wake up all worker threads
+            shutdown(listener, SHUT_RDWR);
+            close(listener);
+
+            close(fd);
+            return;
         } 
         else {
             response = "Unknown command\n";
@@ -159,7 +185,7 @@ void processClient(int sockfd) {
 
 // Server main function
 int main() {
-    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    listener = socket(AF_INET, SOCK_STREAM, 0);
     if (listener == -1) {
         perror("socket");
         return 1;
@@ -186,7 +212,7 @@ int main() {
 
     // Create leader thread
     pthread_t leader;
-    if (pthread_create(&leader, nullptr, leaderThread, &listener) != 0) {
+    if (pthread_create(&leader, nullptr, leaderThread, nullptr) != 0) {
         perror("pthread_create (leader)");
         return 1;
     }
@@ -206,11 +232,14 @@ int main() {
         pthread_join(workers[i], nullptr);
     }
 
+    std::cout << "Cleaning up resources..." << std::endl;
     close(listener);
     delete g;
     pthread_mutex_destroy(&graphMutex);
     pthread_mutex_destroy(&queueMutex);
     pthread_cond_destroy(&queueCond);
+    std::cout << "Server has shut down." << std::endl;
+
     return 0;
 }
 
