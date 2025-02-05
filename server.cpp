@@ -1,174 +1,219 @@
-/*
-MST Server Implementation in C++
-Using Boost.Asio for Asynchronous Networking
-Supports Kruskal and Prim Algorithms
-Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool, Pipeline Pattern
-Includes Memory and Performance Analysis using Valgrind
-Provides Unit Tests and Code Coverage with Google Test
-*/
-
-#include "graph.h"
-#include "mst_factory.h"
-#include <boost/asio.hpp>
+#include "graph.hpp"
 #include <iostream>
-#include <string>
-#include <sstream>
-#include <thread>
-#include <vector>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <cstring>
+#include <pthread.h>
 #include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <chrono>
-#include <gtest/gtest.h>
 
-using boost::asio::ip::tcp;
+// Constants
+#define MAX_THREADS 4
+#define MAX_QUEUE_SIZE 100
 
-class PipelineStage {
-public:
-    virtual void process(std::string request, std::function<void(std::string)> next) = 0;
-};
+// Global Variables
+Graph* g = nullptr;
+pthread_mutex_t graphMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t graphCond = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t queueMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t queueCond = PTHREAD_COND_INITIALIZER;
 
-class ParseRequestStage : public PipelineStage {
-public:
-    void process(std::string request, std::function<void(std::string)> next) override {
-        next(request); // Pass request to next stage
-    }
-};
+std::queue<int> requestQueue;
+bool serverRunning = true;
 
-class ComputeMSTStage : public PipelineStage {
-public:
-    void process(std::string request, std::function<void(std::string)> next) override {
-        auto start = std::chrono::high_resolution_clock::now();
+// Function Prototypes
+void* leaderThread(void* arg);
+void* workerThread(void* arg);
+void processClient(int clientSocket);
+void notifyGraphUpdated();
 
-        std::istringstream ss(request);
-        std::string command;
-        ss >> command;
+void notifyGraphUpdated() {
+    pthread_mutex_lock(&graphMutex);
+    pthread_cond_signal(&graphCond);
+    pthread_mutex_unlock(&graphMutex);
+}
 
-        if (command == "MST") {
-            std::string algorithm;
-            ss >> algorithm;
-            
-            Graph g;
-            int u, v;
-            double w;
-            
-            while (ss >> u >> v >> w) {
-                g.addEdge(u, v, w);
-            }
-            
-            MST mst = (algorithm == "KRUSKAL") ? 
-                      MSTFactory::computeMST(g, KRUSKAL) : 
-                      MSTFactory::computeMST(g, PRIM);
+// Leader-Follower pattern: Leader thread accepts connections
+void* leaderThread(void* arg) {
+    int listener = *(int*)arg;
 
-            std::ostringstream output;
-            for (const auto& [u, v, weight] : mst.getEdges()) {
-                output << u << " - " << v << " : " << weight << "\n";
-            }
+    while (serverRunning) {
+        struct sockaddr_in clientAddr;
+        socklen_t clientLen = sizeof(clientAddr);
+        int clientSocket = accept(listener, (struct sockaddr*)&clientAddr, &clientLen);
 
-            auto end = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double> duration = end - start;
-            output << "Computation Time: " << duration.count() << " seconds\n";
+        if (clientSocket < 0) {
+            perror("accept");
+            continue;
+        }
 
-            next(output.str());
+        std::cout << "Accepted connection from " << inet_ntoa(clientAddr.sin_addr) << std::endl;
+
+        pthread_mutex_lock(&queueMutex);
+        if (requestQueue.size() < MAX_QUEUE_SIZE) {
+            requestQueue.push(clientSocket);
+            pthread_cond_signal(&queueCond);
         } else {
-            next("Invalid Command");
+            close(clientSocket);
         }
+        pthread_mutex_unlock(&queueMutex);
     }
-};
+    return nullptr;
+}
 
-class ResponseStage : public PipelineStage {
-public:
-    void process(std::string response, std::function<void(std::string)> next) override {
-        next(response + "\n");
-    }
-};
+// Worker thread processes client requests (Pipeline pattern)
+void* workerThread(void* arg) {
+    while (serverRunning) {
+        int clientSocket;
 
-class MSTServer {
-public:
-    MSTServer(boost::asio::io_context& io_context, int port, int num_threads)
-        : io_context(io_context), acceptor(io_context, tcp::endpoint(tcp::v4(), port)) {
-        startAccept();
-        for (int i = 0; i < num_threads; ++i) {
-            worker_threads.emplace_back([this]() { io_context.run(); });
+        pthread_mutex_lock(&queueMutex);
+        while (requestQueue.empty()) {
+            pthread_cond_wait(&queueCond, &queueMutex);
         }
-    }
+        clientSocket = requestQueue.front();
+        requestQueue.pop();
+        pthread_mutex_unlock(&queueMutex);
 
-    ~MSTServer() {
-        for (auto& thread : worker_threads) {
-            if (thread.joinable()) {
-                thread.join();
+        processClient(clientSocket);
+    }
+    return nullptr;
+}
+
+// Process a client request
+void processClient(int sockfd) {
+    char buffer[1024];
+    int fd = sockfd;
+
+    while (true) {
+        int nbytes = read(fd, buffer, sizeof(buffer) - 1);
+        if (nbytes <= 0) {
+            if (nbytes == 0) {
+                std::cout << "Connection closed by client" << std::endl;
+            } else {
+                perror("recv");
             }
+            close(fd);
+            return;
+        }
+
+        buffer[nbytes] = '\0';
+        std::string command(buffer);
+        std::string response;
+
+        if (command.find("Newgraph") == 0) {
+            int n;
+            sscanf(command.c_str(), "Newgraph %d", &n);
+            pthread_mutex_lock(&graphMutex);
+            delete g;
+            g = new Graph(n);
+            pthread_mutex_unlock(&graphMutex);
+            response = "New graph created\n";
+        } 
+        else if (command.find("Newedge") == 0) {
+            int u, v, weight;
+            sscanf(command.c_str(), "Newedge %d,%d,%d", &u, &v, &weight);
+            pthread_mutex_lock(&graphMutex);
+            if (g != nullptr) {
+                g->addEdge(u, v, weight);
+            }
+            pthread_mutex_unlock(&graphMutex);
+            response = "Edge added\n";
+            notifyGraphUpdated();
+        } 
+        else if (command.find("Removeedge") == 0) {
+            int u, v;
+            sscanf(command.c_str(), "Removeedge %d,%d", &u, &v);
+            pthread_mutex_lock(&graphMutex);
+            if (g != nullptr) {
+                g->removeEdge(u, v);
+            }
+            pthread_mutex_unlock(&graphMutex);
+            response = "Edge removed\n";
+            notifyGraphUpdated();
+        } 
+        else if (command.find("MST") == 0) {
+            int root;
+            char algoType[10];
+            sscanf(command.c_str(), "MST %s %d", algoType, &root);
+
+            MSTAlgorithm algo = (strcmp(algoType, "Prim") == 0) ? MSTAlgorithm::PRIM : MSTAlgorithm::BORUVKA;
+            pthread_mutex_lock(&graphMutex);
+            if (g != nullptr) {
+                g->computeMST(algo, root);
+                response = "MST Computed:\n";
+                response += "Total MST Weight: " + std::to_string(g->getMSTTotalWeight()) + "\n";
+                response += "Longest Distance in MST: " + std::to_string(g->getMSTLongestDistance()) + "\n";
+                response += "Average Distance in MST: " + std::to_string(g->getMSTAverageDistance()) + "\n";
+                response += "Shortest Distance in MST: " + std::to_string(g->getMSTShortestDistance()) + "\n";
+            }
+            pthread_mutex_unlock(&graphMutex);
+        } 
+        else {
+            response = "Unknown command\n";
+        }
+
+        send(fd, response.c_str(), response.size(), 0);
+    }
+}
+
+// Server main function
+int main() {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener == -1) {
+        perror("socket");
+        return 1;
+    }
+
+    struct sockaddr_in serveraddr;
+    serveraddr.sin_family = AF_INET;
+    serveraddr.sin_addr.s_addr = INADDR_ANY;
+    serveraddr.sin_port = htons(9034);
+
+    if (bind(listener, (struct sockaddr*)&serveraddr, sizeof(serveraddr)) == -1) {
+        perror("bind");
+        close(listener);
+        return 1;
+    }
+
+    if (listen(listener, 10) == -1) {
+        perror("listen");
+        close(listener);
+        return 1;
+    }
+
+    std::cout << "Server is running on port 9034" << std::endl;
+
+    // Create leader thread
+    pthread_t leader;
+    if (pthread_create(&leader, nullptr, leaderThread, &listener) != 0) {
+        perror("pthread_create (leader)");
+        return 1;
+    }
+
+    // Create worker threads
+    pthread_t workers[MAX_THREADS];
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (pthread_create(&workers[i], nullptr, workerThread, nullptr) != 0) {
+            perror("pthread_create (worker)");
+            return 1;
         }
     }
 
-private:
-    void startAccept() {
-        auto socket = std::make_shared<tcp::socket>(io_context);
-        acceptor.async_accept(*socket, [this, socket](boost::system::error_code ec) {
-            if (!ec) {
-                handleClient(socket);
-            }
-            startAccept();  // Continue accepting new connections
-        });
+    // Join threads
+    pthread_join(leader, nullptr);
+    for (int i = 0; i < MAX_THREADS; i++) {
+        pthread_join(workers[i], nullptr);
     }
 
-    void handleClient(std::shared_ptr<tcp::socket> socket) {
-        auto buffer = std::make_shared<boost::asio::streambuf>();
-        boost::asio::async_read_until(*socket, *buffer, "\n",
-            [this, socket, buffer](boost::system::error_code ec, std::size_t) {
-                if (!ec) {
-                    std::istream stream(buffer.get());
-                    std::string request;
-                    std::getline(stream, request);
-                    
-                    processPipeline(request, [socket](std::string response) {
-                        boost::asio::async_write(*socket, boost::asio::buffer(response),
-                            [socket](boost::system::error_code, std::size_t) {});
-                    });
-                }
-            });
-    }
-
-    void processPipeline(std::string request, std::function<void(std::string)> finalStage) {
-        ParseRequestStage parseStage;
-        ComputeMSTStage computeStage;
-        ResponseStage responseStage;
-
-        parseStage.process(request, [&](std::string parsedRequest) {
-            computeStage.process(parsedRequest, [&](std::string computedResult) {
-                responseStage.process(computedResult, finalStage);
-            });
-        });
-    }
-
-    boost::asio::io_context& io_context;
-    tcp::acceptor acceptor;
-    std::vector<std::thread> worker_threads;
-};
-
-// Unit Test
-TEST(MSTTest, KruskalAlgorithm) {
-    Graph g;
-    g.addEdge(0, 1, 4);
-    g.addEdge(1, 2, 2);
-    g.addEdge(2, 3, 3);
-    MST mst = MSTFactory::computeMST(g, KRUSKAL);
-    EXPECT_GT(mst.getTotalWeight(), 0);
+    close(listener);
+    delete g;
+    pthread_mutex_destroy(&graphMutex);
+    pthread_mutex_destroy(&queueMutex);
+    pthread_cond_destroy(&queueCond);
+    return 0;
 }
 
-TEST(MSTTest, PrimAlgorithm) {
-    Graph g;
-    g.addEdge(0, 1, 4);
-    g.addEdge(1, 2, 2);
-    g.addEdge(2, 3, 3);
-    MST mst = MSTFactory::computeMST(g, PRIM);
-    EXPECT_GT(mst.getTotalWeight(), 0);
-}
-
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
 
 
 
