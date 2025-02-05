@@ -12,3 +12,4 @@ public:
 };
 
 #endif // MST_SOLVER_HPP
+
