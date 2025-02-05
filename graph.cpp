@@ -34,10 +34,10 @@ void Graph::printGraph() const {
 }
 
 // Compute MST for a directed graph using the selected algorithm
-void Graph::computeMST(MSTAlgorithm algo, int root) {
+void Graph::computeMST(MSTAlgorithm algo) {
     auto solver = MSTFactory::createSolver(algo);
     mstGraph.assign(n + 1, {}); // Reset MST graph
-    mstWeight = solver->computeMST(n, graph, mstGraph, root);
+    mstWeight = solver->computeMST(n, graph, mstGraph); // Only 3 parameters now
     computeDistances();
 }
 
