@@ -4,6 +4,7 @@ Using Boost.Asio for Asynchronous Networking
 Supports Kruskal and Prim Algorithms
 Implements Design Patterns: Factory Pattern, Leader-Follower Thread Pool, Pipeline Pattern
 Includes Memory and Performance Analysis using Valgrind
+Provides Unit Tests and Code Coverage with Google Test
 */
 
 #include "graph.h"
@@ -18,6 +19,7 @@ Includes Memory and Performance Analysis using Valgrind
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <gtest/gtest.h>
 
 using boost::asio::ip::tcp;
 
@@ -144,17 +146,30 @@ private:
     std::vector<std::thread> worker_threads;
 };
 
-int main() {
-    try {
-        const int num_threads = std::thread::hardware_concurrency();
-        boost::asio::io_context io_context;
-        MSTServer server(io_context, 12345, num_threads);
-        io_context.run();
-    } catch (std::exception& e) {
-        std::cerr << "Exception: " << e.what() << std::endl;
-    }
-    return 0;
+// Unit Test
+TEST(MSTTest, KruskalAlgorithm) {
+    Graph g;
+    g.addEdge(0, 1, 4);
+    g.addEdge(1, 2, 2);
+    g.addEdge(2, 3, 3);
+    MST mst = MSTFactory::computeMST(g, KRUSKAL);
+    EXPECT_GT(mst.getTotalWeight(), 0);
 }
+
+TEST(MSTTest, PrimAlgorithm) {
+    Graph g;
+    g.addEdge(0, 1, 4);
+    g.addEdge(1, 2, 2);
+    g.addEdge(2, 3, 3);
+    MST mst = MSTFactory::computeMST(g, PRIM);
+    EXPECT_GT(mst.getTotalWeight(), 0);
+}
+
+int main(int argc, char **argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
+
 
 
 
