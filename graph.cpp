@@ -1,56 +1,67 @@
-#include "graph.h"
+#include "graph.hpp"
+#include <stack>
+#include <algorithm>
 
-void Graph::addEdge(int u, int v, double weight) {
-    adjList[u][v] = weight;
+Graph::Graph(int n, int m) : n(n), m(m) {
+    graph.resize(n + 1);
+    reverseGraph.resize(n + 1);
+}
+
+void Graph::addEdge(int u, int v) {
+    graph[u].push_back(v);
+    reverseGraph[v].push_back(u);
 }
 
 void Graph::removeEdge(int u, int v) {
-    if (adjList.find(u) != adjList.end()) {
-        adjList[u].erase(v);
-        if (adjList[u].empty()) {
-            adjList.erase(u);
+    graph[u].remove(v);
+    reverseGraph[v].remove(u);
+}
+
+std::vector<std::vector<int>> Graph::kosaraju() {
+    std::list<int> Stack;
+    std::vector<bool> visited(n + 1, false);
+
+    for (int i = 1; i <= n; ++i) {
+        if (!visited[i]) {
+            dfs(i, visited, Stack);
+        }
+    }
+
+    std::fill(visited.begin(), visited.end(), false);
+    std::vector<std::vector<int>> sccs;
+
+    while (!Stack.empty()) {
+        int v = Stack.back();
+        Stack.pop_back();
+
+        if (!visited[v]) {
+            std::vector<int> component;
+            reverseDfs(v, visited, component);
+            sccs.push_back(component);
+        }
+    }
+
+    return sccs;
+}
+
+void Graph::dfs(int v, std::vector<bool>& visited, std::list<int>& Stack) {
+    visited[v] = true;
+    for (int neighbor : graph[v]) {
+        if (!visited[neighbor]) {
+            dfs(neighbor, visited, Stack);
+        }
+    }
+    Stack.push_back(v);
+}
+
+void Graph::reverseDfs(int v, std::vector<bool>& visited, std::vector<int>& component) {
+    visited[v] = true;
+    component.push_back(v);
+    for (int neighbor : reverseGraph[v]) {
+        if (!visited[neighbor]) {
+            reverseDfs(neighbor, visited, component);
         }
     }
 }
 
-void Graph::updateEdge(int u, int v, double newWeight) {
-    if (containsEdge(u, v)) {
-        adjList[u][v] = newWeight;
-    }
-}
 
-std::vector<std::pair<int, double>> Graph::getNeighbors(int u) const {
-    std::vector<std::pair<int, double>> neighbors;
-    if (adjList.find(u) != adjList.end()) {
-        for (const auto& pair : adjList.at(u)) {
-            neighbors.emplace_back(pair.first, pair.second);
-        }
-    }
-    return neighbors;
-}
-
-void Graph::printGraph() const {
-    for (const auto& node : adjList) {
-        std::cout << "Vertex " << node.first << " -> ";
-        for (const auto& edge : node.second) {
-            std::cout << "(" << edge.first << ", " << edge.second << ") ";
-        }
-        std::cout << std::endl;
-    }
-}
-
-bool Graph::containsVertex(int u) const {
-    return adjList.find(u) != adjList.end();
-}
-
-bool Graph::containsEdge(int u, int v) const {
-    return adjList.find(u) != adjList.end() && adjList.at(u).find(v) != adjList.at(u).end();
-}
-
-std::vector<int> Graph::getVertices() const {
-    std::vector<int> vertices;
-    for (const auto& node : adjList) {
-        vertices.push_back(node.first);
-    }
-    return vertices;
-}
