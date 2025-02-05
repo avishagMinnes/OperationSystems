@@ -5,6 +5,8 @@
 #include <vector>
 #include <limits>
 #include <iostream>
+#include <tuple>
+
 
 class BoruvkaSolver : public MSTSolver {
 public:
